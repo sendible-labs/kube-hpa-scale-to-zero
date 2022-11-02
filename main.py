@@ -8,6 +8,7 @@ from time import sleep
 
 import kubernetes
 from kubernetes import watch
+import urllib
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,7 +40,7 @@ class HPA:
     target_name: str
 
 
-SYNC_INTERVAL = 30
+SYNC_INTERVAL = 5
 HPAs: dict[str, HPA] = {}
 _LOCK = threading.Lock()
 
@@ -116,17 +117,21 @@ def build_metric_value_path(hpa) -> str:
         hpa.metadata.annotations["autoscaling.alpha.kubernetes.io/metrics"]
     )
     # Only supports ONE CUSTOM metric without selector based on service for now.
-    custom_metric = next(m["object"] for m in metrics if m["type"] == "Object")
-    target = custom_metric["target"]
-    assert target["kind"] == "Service"
-    assert not target.get("selector")
-
-    service_namespace = hpa.metadata.namespace
-    service_name = target["name"]
-    metric_name = custom_metric["metricName"]
-
-    return f"apis/custom.metrics.k8s.io/v1beta1/namespaces/{service_namespace}/services/{service_name}/{metric_name}"
-
+    for m in metrics:
+        if m["type"] == "Object":
+            custom_metric = m["object"]
+            target = custom_metric["target"]
+            assert target["kind"] == "Service"
+            assert not target.get("selector")
+            service_namespace = hpa.metadata.namespace
+            service_name = target["name"]
+            metric_name = custom_metric["metricName"]
+            return f"apis/custom.metrics.k8s.io/v1beta1/namespaces/{service_namespace}/services/{service_name}/{metric_name}"
+        elif m["type"] == "External":
+            custom_metric = m["external"]
+            metric_name = custom_metric["metricName"]
+            labels = custom_metric["metricSelector"]["matchLabels"]
+            return f"apis/external.metrics.k8s.io/v1beta1/namespaces/default/{metric_name}?labelSelector={urllib.parse.urlencode(labels)}"
 
 def get_needed_replicas(metric_value_path) -> int | None:
     """
